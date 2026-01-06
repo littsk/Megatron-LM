@@ -2878,6 +2878,9 @@ def _add_distributed_args(parser):
                        'Set to enable FSDP ZeRO-2.')
     group.add_argument('--context-parallel-size', type=int, default=1,
                        help='Degree of context parallelism.')
+    group.add_argument('--context-parallel-backend', type=str, default='default',
+                        choices=['default', 'magi', 'dynamic_cp'],
+                        help='Context parallel handler to use.')
     group.add_argument('--cp-comm-type', nargs='+', type=str, default=["p2p"],
                        help='Inter-gpu communication type for context parallelism: '
                        'p2p, a2a, allgather or a2a+p2p. If a single string is provided, '

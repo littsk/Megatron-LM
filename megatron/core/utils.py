@@ -61,8 +61,10 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from megatron.core.context_parallel import ContextParallelHandler
-
+    from megatron.core.context_parallel import (
+        ContextParallelHandler,
+        TEDynamicContextParallelHandler,
+    )
 try:
     _torch_version = PkgVersion(torch.__version__)
 except Exception:
@@ -1974,6 +1976,16 @@ def get_batch_on_this_cp_rank(
 
         cp_handler = DefaultContextParallelHandler()
 
+    # Convert [seqlen] to [1, seqlen] similar to default collate_fn
+    # as hybrid_context_parallel dataloader wrapper does not go through default collate_fn
+    from megatron.core.context_parallel import TEDynamicContextParallelHandler
+
+    if isinstance(cp_handler, TEDynamicContextParallelHandler):
+        for key, data in batch.items():
+            if key in ['attention_mask']:
+                continue
+            batch[key] = torch.stack([data], 0)
+
     for key, val in batch.items():
         if val is not None:
             assert isinstance(val, torch.Tensor)
@@ -1981,60 +1993,6 @@ def get_batch_on_this_cp_rank(
             batch[key] = cp_handler.dispatch(seq_dim=seq_dim, tensor=val)
 
     return batch
-
-
-################################
-### hybrid context parallel ###
-################################
-
-
-def get_batch_on_this_hybrid_cp_rank(
-    batch: Dict[str, Any],
-    local_cp_size: int,
-    cp_group: Optional[torch.distributed.ProcessGroup] = None,
-):
-    """Slice batch input along sequence dimension into multiple chunks,
-    which are parallelized across GPUs in a context parallel group.
-    """
-    assert local_cp_size is not None
-    if cp_group is None:
-        # Get the local cp group required for as defined by the HybridCPDataLoaderWrapper
-        if local_cp_size > 1:
-            cp_group = parallel_state.get_hybrid_data_context_parallel_groups(
-                group_size=local_cp_size
-            )
-    else:
-        # If cp group is provided, it must match the local cp size
-        # as defined by the HybridCPDataLoaderWrapper
-        assert cp_group.size() == local_cp_size
-
-    # Convert [seqlen] to [1, seqlen] similar to default collate_fn
-    # as hybrid_context_parallel dataloader wrapper does not go through default collate_fn
-    for key, data in batch.items():
-        if key in ['attention_mask']:
-            continue
-        batch[key] = torch.stack([data], 0)
-    sample_length = batch['tokens'].shape[1]
-    # TODO(pmannan): Take care of padding tokens here if not divisible by cp_size*2
-    # Create packed_seq_params for SBHD format with cp group information.
-    packed_seq_params = PackedSeqParams(
-        qkv_format="sbhd",
-        cu_seqlens_q=torch.tensor([0, sample_length], device="cuda", pin_memory=True),
-        cu_seqlens_kv=torch.tensor([0, sample_length], device="cuda", pin_memory=True),
-        cu_seqlens_q_padded=torch.tensor([0, sample_length], device="cuda", pin_memory=True),
-        cu_seqlens_kv_padded=torch.tensor([0, sample_length], device="cuda", pin_memory=True),
-        max_seqlen_q=sample_length,
-        max_seqlen_kv=sample_length,
-        local_cp_size=local_cp_size,
-        cp_group=cp_group,
-    )
-
-    if cp_group is not None and cp_group.size() > 1:
-        # When using hybrid_context_parallel, each sub-sample of a packed sample is
-        # required to be divisible by CP*DP*2 or CP*DP*TP*2 (if using sequence parallel)
-        batch = get_batch_on_this_cp_rank(batch, cp_group)
-
-    return batch, packed_seq_params
 
 
 ######################

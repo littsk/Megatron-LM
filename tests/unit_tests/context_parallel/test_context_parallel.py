@@ -61,13 +61,17 @@ class TestContextParallelHandler:
         Utils.destroy_model_parallel()
 
     @pytest.mark.skip
-    @pytest.mark.parametrize("backend", ["transformer_engine"])
-    def test_dispatch_combine_thd(self, backend: str):
+    @pytest.mark.parametrize("transformer_backend", ["transformer_engine"])
+    @pytest.mark.parametrize("context_parallel_backend", ["default"])
+    def test_dispatch_combine_thd(self, transformer_backend: str, context_parallel_backend: str):
         """
         Test dispatch and combine logic for THD format (Packed/VarLen sequences).
         Verifies both forward pass (Rotary Embedding) and backward pass (Gradients).
         """
-        cp_handler_cls = get_cp_handler_cls(backend=backend)
+        cp_handler_cls = get_cp_handler_cls(
+            transformer_backend=transformer_backend,
+            context_parallel_backend=context_parallel_backend,
+        )
 
         config = self.parallel_attention.config
         self.parallel_attention.cuda()
@@ -134,13 +138,17 @@ class TestContextParallelHandler:
 
         torch.testing.assert_close(grad_input, grad_input_ref, atol=1e-10, rtol=1e-4)
 
-    @pytest.mark.parametrize("backend", ["transformer_engine"])
-    def test_dispatch_combine_sbhd(self, backend: str):
+    @pytest.mark.parametrize("transformer_backend", ["transformer_engine"])
+    @pytest.mark.parametrize("context_parallel_backend", ["default"])
+    def test_dispatch_combine_sbhd(self, transformer_backend: str, context_parallel_backend: str):
         """
         Test dispatch and combine logic for SBHD format (Standard layout: Seq, Batch, Head, Dim).
         Verifies both forward pass (Rotary Embedding) and backward pass (Gradients).
         """
-        cp_handler_cls = get_cp_handler_cls(backend=backend)
+        cp_handler_cls = get_cp_handler_cls(
+            transformer_backend=transformer_backend,
+            context_parallel_backend=context_parallel_backend,
+        )
         config = self.parallel_attention.config
         self.parallel_attention.cuda()
 
