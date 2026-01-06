@@ -14,7 +14,7 @@ from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, Moc
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.rerun_state_machine import get_rerun_state_machine
-from megatron.core.utils import get_attr_wrapped_model, get_batch_on_this_hybrid_cp_rank, StragglerDetector
+from megatron.core.utils import get_attr_wrapped_model, StragglerDetector
 from megatron.core.tokenizers.text.utils.build_tokenizer import build_tokenizer
 from megatron.core.transformer.multi_token_prediction import mtp_on_this_rank, get_mtp_ranks
 from megatron.training.arguments import core_transformer_config_from_args
@@ -47,8 +47,8 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     config = core_transformer_config_from_args(args)
 
     backend = args.transformer_impl
-    cp_comm_type = args.cp_comm_type
-    cp_handler_cls = get_cp_handler_cls(backend=backend, cp_comm_type=cp_comm_type)
+    cp_backend = args.context_parallel_backend
+    cp_handler_cls = get_cp_handler_cls(transformer_backend=backend, context_parallel_backend=cp_backend)
 
     # TODO: this is pretty hacky, find a better way
     if not is_first_or_last_pipeline_stage(vp_stage) and (
@@ -59,7 +59,7 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     batch = get_batch_on_this_tp_rank(
         data_iterator,
         mtp_on_this_rank=mtp_on_this_rank(config, ignore_virtual=False, vp_stage=vp_stage)
-        )
+    )
 
     cu_seqlens = batch.pop('cu_seqlens', None)
     cu_seqlens_padded = batch.pop('cu_seqlens_padded', None)
@@ -67,24 +67,34 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     local_cp_size = batch.pop('local_cp_size', None)
     if local_cp_size is not None:
         local_cp_size = int(local_cp_size.item())
+        if local_cp_size > 1:
+            cp_group = parallel_state.get_hybrid_data_context_parallel_groups(
+                group_size=local_cp_size
+            )
+        else:
+            cp_group = None
+    else:
+        cp_group = parallel_state.get_context_parallel_group()
 
-    qkv_format = "sbhd" if cu_seqlens is None and local_cp_size is None else "thd"
+    qkv_format = "sbhd" if cu_seqlens is None or local_cp_size is not None else "thd"
+    if cu_seqlens:
+        max_seqlen_q, max_seqlen_kv = None, None
+    elif local_cp_size is not None:
+        max_seqlen_q, max_seqlen_kv = batch['tokens'].size(0), batch['tokens'].size(0)
+    else:
+        max_seqlen_q, max_seqlen_kv = batch['tokens'].size(1), batch['tokens'].size(1)
     cp_handler = cp_handler_cls(
         qkv_format=qkv_format,
-        cp_group=parallel_state.get_context_parallel_group(),
+        cp_group=cp_group,
         cu_seqlens_q=cu_seqlens,
         cu_seqlens_kv=cu_seqlens,
-        max_seqlen_q=None if cu_seqlens else batch['tokens'].size(1),
-        max_seqlen_kv=None if cu_seqlens else batch['tokens'].size(1),
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_kv=max_seqlen_kv,
+        local_cp_size=local_cp_size,
     )
 
-    if (cu_seqlens is None and local_cp_size is None) or local_cp_size is None:
-        batch = get_batch_on_this_cp_rank(batch, cp_handler=cp_handler) 
-    else: # Hybrid CP format
-        raise NotImplementedError("Hybrid CP not yet supported")
-        # TODO(littsk): support cp_handler in hybrid cp
-        batch, packed_seq_params = get_batch_on_this_hybrid_cp_rank(batch, local_cp_size)
-    
+    batch = get_batch_on_this_cp_rank(batch, cp_handler=cp_handler)
+
     return (*batch.values(), cp_handler)
 
 

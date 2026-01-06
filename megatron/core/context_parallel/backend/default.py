@@ -615,50 +615,58 @@ class DefaultContextParallelHandler(ContextParallelHandler):
             self.seqlens_q_list = seqlens_q.tolist()
             self.seqlens_kv_list = seqlens_kv.tolist()
 
-            # Calculate padded sequence lengths to be divisible by (2 * cp_size)
-            # This is often required for specific balanced splitting strategies
-            align_factor = 2 * self._cp_size
-            seqlens_q_padded = (seqlens_q + align_factor - 1) // align_factor * align_factor
-            seqlens_kv_padded = (seqlens_kv + align_factor - 1) // align_factor * align_factor
+            if self._cp_size > 1:
+                # Calculate padded sequence lengths to be divisible by (2 * cp_size)
+                # This is often required for specific balanced splitting strategies
+                align_factor = 2 * self._cp_size
+                seqlens_q_padded = (seqlens_q + align_factor - 1) // align_factor * align_factor
+                seqlens_kv_padded = (seqlens_kv + align_factor - 1) // align_factor * align_factor
 
-            seqlens_q_padded_size = seqlens_q_padded - seqlens_q
-            seqlens_kv_padded_size = seqlens_kv_padded - seqlens_kv
+                seqlens_q_padded_size = seqlens_q_padded - seqlens_q
+                seqlens_kv_padded_size = seqlens_kv_padded - seqlens_kv
 
-            self.seqlens_q_padded = seqlens_q_padded
-            self.seqlens_kv_padded = seqlens_kv_padded
+                self.seqlens_q_padded = seqlens_q_padded
+                self.seqlens_kv_padded = seqlens_kv_padded
 
-            max_seqlen_q = torch.max(seqlens_q_padded).item()
-            max_seqlen_kv = torch.max(seqlens_kv_padded).item()
-            self.max_seqlen_q = max_seqlen_q
-            self.max_seqlen_kv = max_seqlen_kv
+                max_seqlen_q = torch.max(seqlens_q_padded).item()
+                max_seqlen_kv = torch.max(seqlens_kv_padded).item()
+                self.max_seqlen_q = max_seqlen_q
+                self.max_seqlen_kv = max_seqlen_kv
 
-            # Create a flattened list of [actual_len, pad_len] for internal C++ or CUDA kernels
-            self.seqlens_q_with_padded_list = (
-                torch.stack([seqlens_q, seqlens_q_padded_size], dim=1).flatten().tolist()
-            )
-            self.seqlens_kv_with_padded_list = (
-                torch.stack([seqlens_kv, seqlens_kv_padded_size], dim=1).flatten().tolist()
-            )
+                # Create a flattened list of [actual_len, pad_len] for internal C++ or CUDA kernels
+                self.seqlens_q_with_padded_list = (
+                    torch.stack([seqlens_q, seqlens_q_padded_size], dim=1).flatten().tolist()
+                )
+                self.seqlens_kv_with_padded_list = (
+                    torch.stack([seqlens_kv, seqlens_kv_padded_size], dim=1).flatten().tolist()
+                )
 
-            self.total_seqlen_padded_q = torch.sum(seqlens_q_padded).item()
-            self.total_seqlen_padded_kv = torch.sum(seqlens_kv_padded).item()
+                self.total_seqlen_padded_q = torch.sum(seqlens_q_padded).item()
+                self.total_seqlen_padded_kv = torch.sum(seqlens_kv_padded).item()
 
-            # Re-calculate cumulative sequence lengths based on padded values
-            cu_seqlens_q_padded = torch.zeros(
-                seqlens_q_padded.size(0) + 1,
-                device=seqlens_q_padded.device,
-                dtype=seqlens_q_padded.dtype,
-            )
-            cu_seqlens_kv_padded = torch.zeros(
-                seqlens_kv_padded.size(0) + 1,
-                device=seqlens_kv_padded.device,
-                dtype=seqlens_kv_padded.dtype,
-            )
+                # Re-calculate cumulative sequence lengths based on padded values
+                cu_seqlens_q_padded = torch.zeros(
+                    seqlens_q_padded.size(0) + 1,
+                    device=seqlens_q_padded.device,
+                    dtype=seqlens_q_padded.dtype,
+                )
+                cu_seqlens_kv_padded = torch.zeros(
+                    seqlens_kv_padded.size(0) + 1,
+                    device=seqlens_kv_padded.device,
+                    dtype=seqlens_kv_padded.dtype,
+                )
 
-            torch.cumsum(seqlens_q_padded, dim=0, out=cu_seqlens_q_padded[1:])
-            torch.cumsum(seqlens_kv_padded, dim=0, out=cu_seqlens_kv_padded[1:])
-            self.cu_seqlens_q_padded = cu_seqlens_q_padded
-            self.cu_seqlens_kv_padded = cu_seqlens_kv_padded
+                torch.cumsum(seqlens_q_padded, dim=0, out=cu_seqlens_q_padded[1:])
+                torch.cumsum(seqlens_kv_padded, dim=0, out=cu_seqlens_kv_padded[1:])
+                self.cu_seqlens_q_padded = cu_seqlens_q_padded
+                self.cu_seqlens_kv_padded = cu_seqlens_kv_padded
+            else:
+                if self.max_seqlen_q is None:
+                    max_seqlen_q = torch.max(seqlens_q).item()
+                    self.max_seqlen_q = max_seqlen_q
+                if self.max_seqlen_kv is None:
+                    max_seqlen_kv = torch.max(seqlens_kv).item()
+                    self.max_seqlen_kv = max_seqlen_kv
 
             self._post_initialized = True
 
@@ -995,4 +1003,20 @@ class TEDynamicContextParallelHandler(DefaultContextParallelHandler):
     Inherits from DefaultContextParallelHandler.
     """
 
-    pass
+    def __post_init__(self) -> None:
+        """
+        Post-initialization to set up cu_seqlens and cu_seqlens_padded information
+        required for dynamic context parallelism.
+        """
+        super().__post_init__()
+        assert self.qkv_format == "sbhd"
+        assert (
+            self.local_cp_size is not None
+        ), "dynamic context parallel requires local_cp_size to be set."
+        max_seqlen_q, max_seqlen_kv = self.max_seqlen_q, self.max_seqlen_kv
+        # When using hybrid_context_parallel, each sub-sample of a packed sample is
+        # required to be divisible by CP*DP*2 or CP*DP*TP*2 (if using sequence parallel)
+        self.cu_seqlens_q = torch.tensor([0, max_seqlen_q], device="cuda", pin_memory=True)
+        self.cu_seqlens_kv = torch.tensor([0, max_seqlen_kv], device="cuda", pin_memory=True)
+        self.cu_seqlens_q_padded = torch.tensor([0, max_seqlen_q], device="cuda", pin_memory=True)
+        self.cu_seqlens_kv_padded = torch.tensor([0, max_seqlen_kv], device="cuda", pin_memory=True)

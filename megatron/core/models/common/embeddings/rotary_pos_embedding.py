@@ -234,7 +234,9 @@ class RotaryEmbedding(nn.Module):
 
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
-        if cp_handler is not None and cp_handler.qkv_format == "thd":
+        if cp_handler is not None and (
+            cp_handler.qkv_format == "thd" or cp_handler.local_cp_size is not None
+        ):
             # max_seqlen are the max sequence length in the packed sequence before being divived
             # by the tp and cp size.
             return max(cp_handler.max_seqlen_q, cp_handler.max_seqlen_kv)

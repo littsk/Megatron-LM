@@ -263,6 +263,8 @@ class Attention(MegatronModule, ABC):
         cp_handler=None,
     ):
         """Forward method with selective activation checkpointing."""
+        if cp_handler is None:
+            cp_handler = DefaultContextParallelHandler()
 
         def custom_forward(*inputs):
             query = inputs[0]
@@ -271,8 +273,7 @@ class Attention(MegatronModule, ABC):
             attention_mask = inputs[3]
             attn_mask_type = inputs[5]
             attn_mask_type = AttnMaskType(attn_mask_type.item())
-            if cp_handler is None:
-                cp_handler = DefaultContextParallelHandler()
+
             output_ = cp_handler.core_attn(
                 attn_mod=self.core_attention,
                 query=query,
